@@ -493,7 +493,47 @@ async function notifyRepOfNewWebLead(appId: string | number, repEmail?: string |
   }
 }
 
+// Rep names as they appear on the Sales_Rep__c picklist in Salesforce.
+// Also used (moved here from the email-click webhook handler further down)
+// by scheduleGhlOwnerSync/reconcileGhlOwners so the GHL-owner-sync path can
+// push a resolved rep into Salesforce too, not just record it in CLC.
+const SF_REP_VALUES = ["Dillon LeBlanc", "Julius Speck", "Kenny Nwobi", "Gregory Dergevorkian", "Bryce Jennings", "Lucas Bishop", "Justin Neumann", "Sean Pimentel", "Matthew Abajian"];
+
+// Map a free-form rep hint (GHL user name, list value, email) onto the SF picklist roster
+function normalizeRepName(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const r = String(raw).trim().toLowerCase();
+  if (!r) return undefined;
+  for (const v of SF_REP_VALUES) {
+    const [first, last] = v.toLowerCase().split(" ");
+    if (r === v.toLowerCase() || r.includes(last) || (first.length > 3 && r.includes(first))) return v;
+  }
+  return undefined;
+}
+
+// Push a resolved GHL owner into Salesforce's Sales_Rep__c, skipping cleanly
+// if the name doesn't normalize onto the SF picklist or there's no email to
+// match a Lead/Opportunity by. Non-blocking -- errors are logged, never thrown.
+async function pushRepToSalesforce(appId: string | number, email: string | null | undefined, repName: string) {
+  try {
+    const sfRep = normalizeRepName(repName);
+    if (!sfRep || !email) return;
+    await syncRepAssignmentToSalesforce(email, sfRep);
+    console.log(`[GHL Owner Sync] Pushed rep "${sfRep}" to Salesforce for app ${appId}`);
+  } catch (err: any) {
+    console.error(`[GHL Owner Sync] SF rep push error for app ${appId}:`, err?.message || err);
+  }
+}
+
+// Guards against scheduling more than one 5-minute owner lookup per
+// application -- needed now that the call sites below fire on every save
+// with contact info (not just on completion), so a multi-step form autosaving
+// every few seconds would otherwise queue a fresh timer on each keystroke.
+const ghlOwnerSyncScheduled = new Set<string | number>();
+
 function scheduleGhlOwnerSync(appId: string | number, phone?: string | null, email?: string | null) {
+  if (ghlOwnerSyncScheduled.has(appId)) return;
+  ghlOwnerSyncScheduled.add(appId);
   setTimeout(async () => {
     try {
       const result = await ghlService.resolveOwnerRepName(phone, email);
@@ -504,6 +544,7 @@ function scheduleGhlOwnerSync(appId: string | number, phone?: string | null, ema
       await storage.updateLoanApplication(appId as any, { agentName: result.repName, agentGhlId: result.userId } as any);
       console.log(`[GHL Owner Sync] Assigned rep "${result.repName}" to web lead app ${appId}`);
       notifyRepOfNewWebLead(appId, result.repEmail, result.repName).catch(() => {});
+      pushRepToSalesforce(appId, email, result.repName).catch(() => {});
     } catch (err: any) {
       console.error(`[GHL Owner Sync] Error syncing owner for app ${appId}:`, err.message);
     }
@@ -514,8 +555,11 @@ function scheduleGhlOwnerSync(appId: string | number, phone?: string | null, ema
 // Recurring reconciler: the one-shot 5-minute lookup above dies with every
 // server restart (each republish) and misses owners GHL assigns later than
 // 5 minutes (round-robin workflows, manual claiming). Every 15 minutes,
-// sweep the last 14 days of completed intakes still missing a rep and pull
-// the current GHL owner onto the file.
+// sweep the last 14 days of any file (completed or not) still missing a rep
+// and pull the current GHL owner onto it -- was previously restricted to
+// is_completed = true, which meant partner-site leads that never explicitly
+// complete never got checked at all, even though those sites fire their own
+// GHL webhook regardless of completion.
 let ghlOwnerReconcilerRunning = false;
 async function reconcileGhlOwners() {
   if (ghlOwnerReconcilerRunning) return;
@@ -525,7 +569,8 @@ async function reconcileGhlOwners() {
     if (!neonPool) return;
     const rows = await neonPool.query(
       `SELECT id, email, phone FROM loan_applications
-       WHERE is_completed = true AND agent_name IS NULL AND agent_email IS NULL
+       WHERE (agent_name IS NULL OR agent_name = '') AND (agent_email IS NULL OR agent_email = '')
+         AND (email IS NOT NULL OR phone IS NOT NULL)
          AND created_at >= NOW() - INTERVAL '14 days'
        ORDER BY created_at DESC LIMIT 60`
     );
@@ -537,6 +582,7 @@ async function reconcileGhlOwners() {
           await storage.updateLoanApplication(app.id, { agentName: result.repName, agentGhlId: result.userId } as any);
           assigned++;
           notifyRepOfNewWebLead(app.id, result.repEmail, result.repName).catch(() => {});
+          pushRepToSalesforce(app.id, app.email, result.repName).catch(() => {});
         }
       } catch {}
       await new Promise(r => setTimeout(r, 300));
@@ -2224,10 +2270,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (applicationData.isCompleted) {
               storage.updateLoanApplication(updatedApp.id, { isWebLead: true } as any).catch(() => {});
             }
-            // Schedule GHL owner sync only on first completion with no agent attribution
-            if (isFirstCompletion && !existingApp.agentEmail && !existingApp.agentName) {
-              scheduleGhlOwnerSync(updatedApp.id, updatedApp.phone, updatedApp.email);
-            }
+          }
+        }
+
+        // Any file with contact info gets checked for an assigned GHL rep,
+        // regardless of completion status -- partner sites already fire their
+        // GHL webhook whether or not the intake is complete (see
+        // isPartnerSiteSubmission above), so a real owner can already exist
+        // in GHL before completion. scheduleGhlOwnerSync dedupes per appId,
+        // so calling it here is harmless even on records already handled by
+        // the completion branch above.
+        {
+          const ownerCheckApp = updatedApp || existingApp;
+          if (ownerCheckApp && (ownerCheckApp.email || ownerCheckApp.phone) && !existingApp.agentEmail && !existingApp.agentName) {
+            scheduleGhlOwnerSync(ownerCheckApp.id, ownerCheckApp.phone, ownerCheckApp.email);
           }
         }
 
@@ -2377,6 +2433,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
             triggerKey: 'trigger.portal_after_intake',
             sendLink: true,
           });
+        }
+      }
+
+      // Any new file with contact info gets checked for an assigned GHL rep,
+      // regardless of completion status -- see the matching note on the
+      // existing-application branch above. scheduleGhlOwnerSync dedupes per
+      // appId, so this is harmless even if the completion branch above
+      // already scheduled one for this same record.
+      {
+        const ownerCheckNewApp = updatedApp || application;
+        if (ownerCheckNewApp && (ownerCheckNewApp.email || ownerCheckNewApp.phone) && !applicationData.agentEmail && !applicationData.agentName) {
+          scheduleGhlOwnerSync(ownerCheckNewApp.id, ownerCheckNewApp.phone, ownerCheckNewApp.email);
         }
       }
 
@@ -10437,19 +10505,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── EMAIL CLICK → SALESFORCE WEBHOOKS (GHL workflow + Mailgun events) ──
   const EMAIL_CLICK_WEBHOOK_KEY = process.env.EMAIL_CLICK_WEBHOOK_KEY || "tcg-clk-7f3kq9vw2m";
-  const SF_REP_VALUES = ["Dillon LeBlanc", "Julius Speck", "Kenny Nwobi", "Gregory Dergevorkian", "Bryce Jennings", "Lucas Bishop", "Justin Neumann", "Sean Pimentel", "Matthew Abajian"];
-
-  // Map a free-form rep hint (GHL user name, list value, email) onto the SF picklist roster
-  function normalizeRepName(raw?: string | null): string | undefined {
-    if (!raw) return undefined;
-    const r = String(raw).trim().toLowerCase();
-    if (!r) return undefined;
-    for (const v of SF_REP_VALUES) {
-      const [first, last] = v.toLowerCase().split(" ");
-      if (r === v.toLowerCase() || r.includes(last) || (first.length > 3 && r.includes(first))) return v;
-    }
-    return undefined;
-  }
+  // SF_REP_VALUES and normalizeRepName now live at module scope, up near
+  // scheduleGhlOwnerSync, so the GHL-owner-sync path can reuse them too.
 
   // Rep cascade for clickers not yet in SF: live GHL owner → uploaded rep list → prior application attribution
   async function resolveRepForEmail(email: string, phone?: string): Promise<string | undefined> {
