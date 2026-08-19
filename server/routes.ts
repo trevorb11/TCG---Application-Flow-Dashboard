@@ -16,7 +16,7 @@ import { ObjectStorageService, ObjectNotFoundError } from "./objectStorage";
 import { analyzeBankStatements, isOpenAIConfigured, parseApprovalEmail, parseContactSearchQuery, parseRepConsoleCommand, extractPositionTerms, extractPositionTermsFromPdfBuffer, generateUnderwritingSnapshot } from "./services/openai";
 import { gmailService, type EmailMessage } from "./services/gmail";
 import { googleSheetsService, type ApprovalRow } from "./services/googleSheets";
-import { notifyMerchantNewMessage } from "./services/twilio";
+import { notifyMerchantNewMessage, sendSms } from "./services/twilio";
 import { fireSmsStageEvent } from "./sms-middleware";
 import { triggerAppAbandoned, triggerApprovalCongratulations, triggerFundedCongratulations } from "./messaging-triggers";
 import { createRequire } from "module";
@@ -462,6 +462,37 @@ async function syncApplicationToSalesforceAndPersist(app: LoanApplication): Prom
  * read the assignedTo user, and write them as agentName on the application so
  * the rep can see the file in their dashboard.
  */
+/**
+ * Text the assigned rep when a web lead gets an owner resolved from GHL.
+ * Phone numbers live in system_settings under key "rep_sms_directory" as a
+ * JSON map of lowercased GHL account email -> phone number (E.164 or plain
+ * digits; Twilio accepts either). Manage via storage.setSetting or the
+ * /api/admin/claude/mutate endpoint against the system_settings table.
+ * Non-blocking — errors are logged but never thrown, never block the caller.
+ */
+async function notifyRepOfNewWebLead(appId: string | number, repEmail?: string | null, repName?: string | null) {
+  try {
+    if (!repEmail) return;
+    const dirRaw = await storage.getSetting("rep_sms_directory");
+    if (!dirRaw) return;
+    const dir: Record<string, string> = JSON.parse(dirRaw);
+    const phone = dir[repEmail.toLowerCase()];
+    if (!phone) {
+      console.log(`[Rep SMS] No phone on file for ${repEmail} (${repName || "unknown"}) — skipping text for app ${appId}`);
+      return;
+    }
+    const app = await storage.getLoanApplication(appId as any);
+    if (!app) return;
+    const businessName = app.legalBusinessName || app.businessName || app.fullName || "New lead";
+    const amount = app.requestedAmount ? `$${Number(app.requestedAmount).toLocaleString()}` : "";
+    const link = `https://app.todaycapitalgroup.com/agent/application/${appId}`;
+    const body = `New web lead assigned to you: ${businessName}${amount ? " - " + amount : ""}. ${link}`;
+    await sendSms(phone, body);
+  } catch (err: any) {
+    console.error(`[Rep SMS] Error notifying rep for app ${appId}:`, err?.message || err);
+  }
+}
+
 function scheduleGhlOwnerSync(appId: string | number, phone?: string | null, email?: string | null) {
   setTimeout(async () => {
     try {
@@ -472,6 +503,7 @@ function scheduleGhlOwnerSync(appId: string | number, phone?: string | null, ema
       }
       await storage.updateLoanApplication(appId as any, { agentName: result.repName, agentGhlId: result.userId } as any);
       console.log(`[GHL Owner Sync] Assigned rep "${result.repName}" to web lead app ${appId}`);
+      notifyRepOfNewWebLead(appId, result.repEmail, result.repName).catch(() => {});
     } catch (err: any) {
       console.error(`[GHL Owner Sync] Error syncing owner for app ${appId}:`, err.message);
     }
@@ -504,6 +536,7 @@ async function reconcileGhlOwners() {
         if (result?.repName) {
           await storage.updateLoanApplication(app.id, { agentName: result.repName, agentGhlId: result.userId } as any);
           assigned++;
+          notifyRepOfNewWebLead(app.id, result.repEmail, result.repName).catch(() => {});
         }
       } catch {}
       await new Promise(r => setTimeout(r, 300));
