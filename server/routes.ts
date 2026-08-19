@@ -2319,6 +2319,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await recordApplicationSubmission(application.id, applicationData.email, 'intake', applicationData.requestedAmount);
       }
 
+      // Partner sites (e.g. the /apply/full flow) can create a brand-new
+      // application that arrives already fully completed in a single POST,
+      // never passing through the existing-app "intake -> full application"
+      // progression above. Without this, such a submission never gets an
+      // application_submissions row at all -- it is invisible to both the
+      // "new application" view (recordApplicationSubmission only logged the
+      // intake type above) and the resubmission/returning-applicant view.
+      if (applicationData.isFullApplicationCompleted) {
+        await recordApplicationSubmission(application.id, applicationData.email, 'full_application', applicationData.requestedAmount);
+      }
+
       // Sync every new dashboard application to Salesforce and persist the
       // returned IDs/status. This includes external Inertia submissions.
       syncApplicationToSalesforceAndPersist(updatedApp || application).catch(() => {});
