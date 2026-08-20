@@ -31,7 +31,7 @@ import { submitToGigFi, isGigFiConfigured, type GigFiLeadData } from "./services
 import { sendMarketingNotification, buildAdsInquiryEmail, buildServicesInterestEmail, buildLeadPortalSignupEmail, buildAdminAlertEmail, sendPipelineReportEmail } from "./services/email";
 import { evaluateLeadQualification } from "./services/leadQualification";
 import { startLeadNurtureScheduler } from "./services/leadNurture";
-import { syncApplicationToSalesforce, syncClcAttributionToSalesforce, syncDecisionToSalesforce, syncUwSubmissionToSalesforce, syncAiSnapshotToSalesforce, promoteOpportunityToUnderwriting, recordEmailClickInSalesforce, recordGhlEmailReplyInSalesforce, syncRepAssignmentToSalesforce } from "./services/salesforce";
+import { syncApplicationToSalesforce, syncClcAttributionToSalesforce, syncDecisionToSalesforce, syncUwSubmissionToSalesforce, syncAiSnapshotToSalesforce, promoteOpportunityToUnderwriting, recordEmailClickInSalesforce, syncRepAssignmentToSalesforce } from "./services/salesforce";
 import { syncApplicationToDialer, syncDecisionToDialer } from "./services/dialerSync";
 import { pollSalesforceChanges } from "./services/salesforcePoll";
 
@@ -10511,7 +10511,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ── EMAIL CLICK → SALESFORCE WEBHOOKS (GHL workflow + Mailgun events) ──
   const EMAIL_CLICK_WEBHOOK_KEY = process.env.EMAIL_CLICK_WEBHOOK_KEY || "tcg-clk-7f3kq9vw2m";
-  const GHL_EMAIL_REPLY_WEBHOOK_KEY = process.env.GHL_EMAIL_REPLY_WEBHOOK_KEY || EMAIL_CLICK_WEBHOOK_KEY;
   // SF_REP_VALUES and normalizeRepName now live at module scope, up near
   // scheduleGhlOwnerSync, so the GHL-owner-sync path can reuse them too.
 
@@ -10620,90 +10619,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (e: any) {
       console.error("[EMAIL-CLICK] ghl handler error:", e);
       res.status(500).json({ error: e.message });
-    }
-  });
-
-  // GHL workflow "Outbound Webhook" step fired for an inbound email. The
-  // workflow's custom fields may arrive at the root or inside customData, so
-  // accept both shapes. Full message bodies are never written to application
-  // logs; only identifiers and the Salesforce result are logged.
-  app.get("/api/webhooks/ghl/email-reply/health", (_req: Request, res: Response) => {
-    res.json({ ok: true, service: "ghl-email-reply-to-salesforce" });
-  });
-
-  app.post("/api/webhooks/ghl/email-reply", async (req: Request, res: Response) => {
-    const suppliedKey = String(req.query.key || req.header("x-tcg-webhook-key") || "");
-    const expectedKey = GHL_EMAIL_REPLY_WEBHOOK_KEY;
-    const supplied = Buffer.from(suppliedKey);
-    const expected = Buffer.from(expectedKey);
-    const authorized = supplied.length === expected.length && timingSafeEqual(supplied, expected);
-    if (!authorized) return res.status(403).json({ error: "bad key" });
-
-    try {
-      const b: any = req.body || {};
-      const c: any = b.contact || {};
-      const d: any = b.customData || b.custom_data || {};
-      const m: any = b.message || {};
-      const pick = (...values: any[]) => {
-        for (const value of values) {
-          const text = String(value ?? "").trim();
-          if (text && !/^\{\{.*\}\}$/.test(text)) return text;
-        }
-        return "";
-      };
-
-      const contactEmail = pick(d.contact_email, d.email, b.email, c.email);
-      const fromEmail = pick(d.from_email, d.fromEmail, b.from_email, b.fromEmail, m.from, contactEmail);
-      const fromName = pick(d.from_name, d.fromName, b.from_name, b.fromName, b.full_name, c.full_name, c.fullName);
-      const subject = pick(d.subject, b.subject, m.subject) || "(no subject)";
-      const latestMessage = pick(d.latest_message, d.latestMessage, b.latest_message, b.latestMessage, m.body);
-      const fullThread = pick(d.full_thread, d.fullThread, b.full_thread, b.fullThread, latestMessage);
-      const ghlMessageId = pick(d.message_id, d.messageId, b.message_id, b.messageId, m.id);
-      const ghlContactId = pick(d.ghl_contact_id, d.ghlContactId, b.ghl_contact_id, b.contact_id, b.contactId, c.id);
-      const toAddress = pick(d.to_email, d.toEmail, b.to_email, b.toEmail, m.to);
-      const receivedAt = pick(d.received_at, d.receivedAt, b.received_at, b.date_created, m.dateAdded, m.date_added);
-
-      const missing: string[] = [];
-      if (!contactEmail || !contactEmail.includes("@")) missing.push("contact email");
-      if (!fromEmail || !fromEmail.includes("@")) missing.push("from email");
-      if (!ghlMessageId) missing.push("message_id");
-      if (!fullThread) missing.push("full_thread/latest_message");
-      if (missing.length) return res.status(400).json({ error: `missing or invalid ${missing.join(", ")}` });
-
-      if (String(req.query.dry_run || "") === "1") {
-        return res.json({
-          ok: true,
-          dryRun: true,
-          parsed: {
-            contactEmail,
-            fromEmail,
-            ghlMessageId,
-            ghlContactId: ghlContactId || null,
-            hasSubject: subject !== "(no subject)",
-            hasLatestMessage: Boolean(latestMessage),
-            hasFullThread: Boolean(fullThread),
-          },
-        });
-      }
-
-      const out = await recordGhlEmailReplyInSalesforce({
-        contactEmail,
-        fromEmail,
-        fromName: fromName || undefined,
-        subject,
-        latestMessage: latestMessage || undefined,
-        fullThread,
-        ghlMessageId,
-        ghlContactId: ghlContactId || undefined,
-        toAddress: toAddress || undefined,
-        receivedAt: receivedAt || undefined,
-      });
-      console.log(`[GHL-EMAIL-REPLY] ${ghlMessageId} ${contactEmail} -> ${out.result}${out.error ? ` (${out.error})` : ""}`);
-      if (out.result === "error") return res.status(500).json(out);
-      return res.json({ synced: out.result === "created" || out.result === "duplicate", ...out });
-    } catch (e: any) {
-      console.error("[GHL-EMAIL-REPLY] handler error:", e?.message || e);
-      return res.status(500).json({ error: e?.message || "unexpected error" });
     }
   });
 
