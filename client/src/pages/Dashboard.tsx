@@ -4408,6 +4408,17 @@ export default function Dashboard() {
                       ) : (
                         <Badge variant="outline" data-testid={`badge-status-incomplete-${app.id}`}>Incomplete</Badge>
                       )}
+                      {(app as any).isWebLead && (
+                        <Badge
+                          variant="outline"
+                          className="text-xs border-sky-400 text-sky-600 dark:text-sky-400 dark:border-sky-700"
+                          title="Application submitted through a public web form"
+                          data-testid={`badge-web-lead-${app.id}`}
+                        >
+                          <Globe className="w-3 h-3 mr-1" />
+                          Web Lead
+                        </Badge>
+                      )}
                       {/* Pipeline status from underwriting decisions */}
                       {app.email && pipelineStatusByEmail.get(app.email.toLowerCase()) && (() => {
                         const ps = pipelineStatusByEmail.get(app.email.toLowerCase())!;
