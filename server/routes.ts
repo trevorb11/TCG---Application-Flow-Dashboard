@@ -31,7 +31,7 @@ import { submitToGigFi, isGigFiConfigured, type GigFiLeadData } from "./services
 import { sendMarketingNotification, buildAdsInquiryEmail, buildServicesInterestEmail, buildLeadPortalSignupEmail, buildAdminAlertEmail, sendPipelineReportEmail } from "./services/email";
 import { evaluateLeadQualification } from "./services/leadQualification";
 import { startLeadNurtureScheduler } from "./services/leadNurture";
-import { syncApplicationToSalesforce, syncDecisionToSalesforce, syncUwSubmissionToSalesforce, syncAiSnapshotToSalesforce, promoteOpportunityToUnderwriting, recordEmailClickInSalesforce, syncRepAssignmentToSalesforce } from "./services/salesforce";
+import { syncApplicationToSalesforce, syncClcAttributionToSalesforce, syncDecisionToSalesforce, syncUwSubmissionToSalesforce, syncAiSnapshotToSalesforce, promoteOpportunityToUnderwriting, recordEmailClickInSalesforce, syncRepAssignmentToSalesforce } from "./services/salesforce";
 import { syncApplicationToDialer, syncDecisionToDialer } from "./services/dialerSync";
 import { pollSalesforceChanges } from "./services/salesforcePoll";
 
@@ -437,6 +437,9 @@ async function syncApplicationToSalesforceAndPersist(app: LoanApplication): Prom
     if (result.contactId) syncUpdates.sfContactId = result.contactId;
     if (result.oppId) syncUpdates.sfOpportunityId = result.oppId;
     await storage.updateLoanApplication(app.id, syncUpdates as any);
+    await syncClcAttributionToSalesforce(app.id, result.oppId).catch(err =>
+      console.error("[CLC Attribution] Application sync error:", err.message)
+    );
 
     if (result.synced) {
       await syncApplicationToDialer(app, {
@@ -867,6 +870,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!application) return res.status(404).json({ error: "Application not found" });
 
       const sfResult = await syncApplicationToSalesforce(application);
+      await syncClcAttributionToSalesforce(application.id, sfResult.oppId).catch(err =>
+        console.error("[CLC Attribution] Manual sync error:", err.message)
+      );
 
       if (sfResult.synced && (sfResult.contactId || sfResult.oppId || sfResult.accountId)) {
         // Persist ALL returned IDs — this endpoint used to store only the

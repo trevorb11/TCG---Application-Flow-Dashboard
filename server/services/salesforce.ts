@@ -375,6 +375,277 @@ export function computePipelineBucket(stage: string, hasApproval?: boolean): str
   }
 }
 
+function isEmailAttributedApplication(app: Record<string, any>): boolean {
+  const source = String(app.utm_source || app.utmSource || "").trim().toLowerCase();
+  const medium = String(app.utm_medium || app.utmMedium || "").trim().toLowerCase();
+  const inferred = [
+    source,
+    app.tracking_source || app.trackingSource,
+    app.source_page || app.sourcePage,
+    app.referrer_url || app.referrerUrl,
+  ].some(value => String(value || "").toLowerCase().includes("email"));
+  return ["email", "mailgun", "ghl", "outlook"].includes(source)
+    || ["email", "email marketing", "ses"].includes(medium)
+    || inferred;
+}
+
+function classifyEmailMessage(app: Record<string, any>): { messageType: string; emailFormat: string } {
+  const campaign = String(app.utm_campaign || app.utmCampaign || "");
+  const content = String(app.utm_content || app.utmContent || "");
+  const term = String(app.utm_term || app.utmTerm || "");
+  const text = `${campaign} ${content} ${term}`.toLowerCase();
+  let messageType = "Other / Unclassified";
+  if (/(consol|debt|\bmca\b|short.?term financing|beat.?offer)/i.test(text)) messageType = "Consolidation";
+  else if (/(line of credit|flex.?draw|(^|[^a-z])loc([^a-z]|$))/i.test(text)) messageType = "Line of Credit";
+  else if (/(working capital|payroll|invoice|cash flow|\$100k|need capital)/i.test(text)) messageType = "Working Capital";
+  else if (/(real estate|heloc)/i.test(text)) messageType = "Real Estate / HELOC";
+  else if (/equipment/i.test(text)) messageType = "Equipment";
+  else if (/(^|[^a-z])sba([^a-z]|$)/i.test(text)) messageType = "SBA";
+  else if (/(pre.?qual|what.*qualify|already qualify|curious.*qualify)/i.test(text)) messageType = "Pre-Qualification";
+  else if (/(industry|restaurant|construction)/i.test(text)) messageType = "Industry-Specific";
+  else if (/(follow.?up|nudge|missed call|didn.?t open|unopened|retarget)/i.test(text)) messageType = "Follow-Up / Retargeting";
+  else if (campaign.trim()) messageType = "General Funding";
+
+  const formatText = `${campaign} ${content}`.toLowerCase();
+  let emailFormat = "Unclassified";
+  if (/(plain.?text|plaintext)/i.test(formatText)) emailFormat = "Plain Text";
+  else if (/(^|[|_-])(html|cta.?button)([|_-]|$)/i.test(content.toLowerCase())) emailFormat = "HTML";
+  else if (/(^|[|_-])hybrid([|_-]|$)/i.test(content.toLowerCase())) emailFormat = "Hybrid";
+  return { messageType, emailFormat };
+}
+
+function validEmail(value: any): string | null {
+  const email = String(value || "").trim();
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ? email : null;
+}
+
+/**
+ * Upsert the application-level full-funnel email attribution record.
+ * The decision lateral join enforces the same last-touch rule used by the
+ * historical backfill: exact Opportunity matches first, then newest email app.
+ */
+export async function syncClcAttributionToSalesforce(
+  applicationId: string,
+  fallbackOppId?: string,
+): Promise<{ synced: boolean; reason?: string; error?: string }> {
+  if (!applicationId || !SF_INSTANCE_URL || (!cachedAccessToken && !SF_CAN_REFRESH)) {
+    return { synced: false, reason: "missing application id or Salesforce credentials" };
+  }
+
+  try {
+    const { pool } = await import("../db");
+    const result = await pool.query(`
+      SELECT
+        a.*,
+        coalesce(s.submission_event_count, 0)::int AS submission_event_count,
+        coalesce(s.has_intake_event, false) OR coalesce(a.is_completed, false) AS intake_completed,
+        coalesce(s.has_full_event, false) OR coalesce(a.is_full_application_completed, false) AS full_application_completed,
+        coalesce(s.first_intake_at, CASE WHEN a.is_completed THEN a.created_at END) AS first_intake_at,
+        coalesce(s.first_full_at, CASE WHEN a.is_full_application_completed THEN a.created_at END) AS first_full_at,
+        d.status AS decision_status,
+        d.advance_amount AS decision_advance_amount,
+        d.approval_date AS decision_approval_date,
+        d.funded_date AS decision_funded_date,
+        d.created_at AS decision_created_at
+      FROM loan_applications a
+      LEFT JOIN LATERAL (
+        SELECT
+          count(x.id) AS submission_event_count,
+          min(x.created_at) FILTER (WHERE lower(trim(coalesce(x.submission_type, ''))) = 'intake') AS first_intake_at,
+          min(x.created_at) FILTER (WHERE lower(trim(coalesce(x.submission_type, ''))) = 'full_application') AS first_full_at,
+          bool_or(lower(trim(coalesce(x.submission_type, ''))) = 'intake') AS has_intake_event,
+          bool_or(lower(trim(coalesce(x.submission_type, ''))) = 'full_application') AS has_full_event
+        FROM application_submissions x
+        WHERE x.loan_application_id = a.id
+      ) s ON true
+      LEFT JOIN LATERAL (
+        SELECT ud.*
+        FROM business_underwriting_decisions ud
+        WHERE (
+          (a.sf_opportunity_id IS NOT NULL AND trim(a.sf_opportunity_id) <> '' AND ud.sf_opportunity_id = a.sf_opportunity_id)
+          OR (a.email IS NOT NULL AND trim(a.email) <> '' AND lower(trim(a.email)) IN (
+            lower(trim(coalesce(ud.business_email, ''))),
+            lower(trim(coalesce(ud.merchant_email, ''))),
+            lower(trim(coalesce(ud.secondary_email, '')))
+          ))
+        )
+        AND greatest(
+          coalesce(ud.funded_date::timestamptz, '-infinity'::timestamptz),
+          coalesce(ud.approval_date::timestamptz, '-infinity'::timestamptz),
+          coalesce(ud.updated_at, ud.created_at)
+        ) >= a.created_at
+        AND NOT EXISTS (
+          SELECT 1
+          FROM loan_applications later
+          WHERE later.id <> a.id
+            AND (
+              lower(trim(coalesce(later.utm_source, ''))) IN ('email','mailgun','ghl','outlook')
+              OR lower(trim(coalesce(later.utm_medium, ''))) IN ('email','email marketing','ses')
+              OR coalesce(later.utm_source, '') ILIKE '%email%'
+              OR coalesce(later.tracking_source, '') ILIKE '%email%'
+              OR coalesce(later.source_page, '') ILIKE '%email%'
+              OR coalesce(later.referrer_url, '') ILIKE '%email%'
+            )
+            AND (
+              (later.sf_opportunity_id IS NOT NULL AND trim(later.sf_opportunity_id) <> '' AND ud.sf_opportunity_id = later.sf_opportunity_id)
+              OR (later.email IS NOT NULL AND trim(later.email) <> '' AND lower(trim(later.email)) IN (
+                lower(trim(coalesce(ud.business_email, ''))),
+                lower(trim(coalesce(ud.merchant_email, ''))),
+                lower(trim(coalesce(ud.secondary_email, '')))
+              ))
+            )
+            AND later.created_at <= greatest(
+              coalesce(ud.funded_date::timestamptz, '-infinity'::timestamptz),
+              coalesce(ud.approval_date::timestamptz, '-infinity'::timestamptz),
+              coalesce(ud.updated_at, ud.created_at)
+            )
+            AND (
+              CASE WHEN ud.sf_opportunity_id = later.sf_opportunity_id AND later.sf_opportunity_id IS NOT NULL THEN 0 ELSE 1 END
+                < CASE WHEN ud.sf_opportunity_id = a.sf_opportunity_id AND a.sf_opportunity_id IS NOT NULL THEN 0 ELSE 1 END
+              OR (
+                CASE WHEN ud.sf_opportunity_id = later.sf_opportunity_id AND later.sf_opportunity_id IS NOT NULL THEN 0 ELSE 1 END
+                  = CASE WHEN ud.sf_opportunity_id = a.sf_opportunity_id AND a.sf_opportunity_id IS NOT NULL THEN 0 ELSE 1 END
+                AND later.created_at > a.created_at
+              )
+            )
+        )
+        ORDER BY greatest(
+          coalesce(ud.funded_date::timestamptz, '-infinity'::timestamptz),
+          coalesce(ud.approval_date::timestamptz, '-infinity'::timestamptz),
+          coalesce(ud.updated_at, ud.created_at)
+        ) DESC
+        LIMIT 1
+      ) d ON true
+      WHERE a.id = $1
+      LIMIT 1
+    `, [applicationId]);
+    const app = result.rows[0];
+    if (!app) return { synced: false, reason: "application not found" };
+    if (!isEmailAttributedApplication(app)) return { synced: false, reason: "not email attributed" };
+
+    const { messageType, emailFormat } = classifyEmailMessage(app);
+    const source = String(app.utm_source || "").trim().toLowerCase();
+    const medium = String(app.utm_medium || "").trim().toLowerCase();
+    const explicitEmail = ["email", "mailgun", "ghl", "outlook"].includes(source)
+      || ["email", "email marketing", "ses"].includes(medium);
+    const createdAt = new Date(app.created_at);
+    const applicationDate = createdAt.toISOString().slice(0, 10);
+    const decisionCreatedAt = app.decision_created_at ? new Date(app.decision_created_at) : null;
+    const explicitApprovalDate = app.decision_approval_date
+      ? new Date(app.decision_approval_date).toISOString().slice(0, 10) : null;
+    const explicitFundedDate = app.decision_funded_date
+      ? new Date(app.decision_funded_date).toISOString().slice(0, 10) : null;
+    const approvalDate = explicitApprovalDate
+      ? (explicitApprovalDate >= applicationDate ? explicitApprovalDate : null)
+      : (["approved", "funded"].includes(String(app.decision_status || "").toLowerCase()) && decisionCreatedAt && decisionCreatedAt >= createdAt
+        ? decisionCreatedAt.toISOString().slice(0, 10) : null);
+    const fundedDate = explicitFundedDate
+      ? (explicitFundedDate >= applicationDate ? explicitFundedDate : null)
+      : (String(app.decision_status || "").toLowerCase() === "funded" && decisionCreatedAt && decisionCreatedAt >= createdAt
+        ? decisionCreatedAt.toISOString().slice(0, 10) : null);
+    const oppIdCandidate = String(fallbackOppId || app.sf_opportunity_id || "").trim();
+    const oppId = /^006[a-zA-Z0-9]{12,15}$/.test(oppIdCandidate) ? oppIdCandidate : null;
+    const approved = !!approvalDate;
+    const funded = !!fundedDate;
+    const lifecycle = funded ? "Funded"
+      : approved ? "Approved"
+      : ["declined", "unqualified"].includes(String(app.decision_status || "").toLowerCase()) ? "Declined / Unqualified"
+      : oppId ? "Opportunity Created"
+      : app.full_application_completed ? "Full Application"
+      : app.intake_completed ? "Intake Completed"
+      : "Attributed Visit";
+
+    const payload: Record<string, any> = {
+      CLC_Application_ID__c: String(app.id),
+      Application_Email__c: validEmail(app.email),
+      Application_Phone__c: app.phone || null,
+      Business_Name__c: app.business_name || app.legal_business_name || null,
+      Application_Created_At__c: app.created_at,
+      First_Intake_At__c: app.first_intake_at || null,
+      First_Full_Application_At__c: app.first_full_at || null,
+      Intake_Completed__c: !!app.intake_completed,
+      Full_Application_Completed__c: !!app.full_application_completed,
+      Has_Opportunity__c: !!oppId,
+      Opportunity__c: oppId,
+      Submission_Event_Count__c: Number(app.submission_event_count || 0),
+      UTM_Source__c: app.utm_source || null,
+      UTM_Medium__c: app.utm_medium || null,
+      UTM_Campaign__c: app.utm_campaign || null,
+      UTM_Content__c: app.utm_content || null,
+      UTM_Term__c: app.utm_term || null,
+      Source_Page__c: app.source_page || null,
+      Referrer_URL__c: app.referrer_url ? String(app.referrer_url).slice(0, 255) : null,
+      Message_Type__c: messageType,
+      Email_Format__c: emailFormat,
+      Attribution_Confidence__c: explicitEmail ? "Explicit Email UTM" : "Inferred Email Referral",
+      Assigned_Rep__c: app.agent_name || null,
+      Requested_Amount__c: parseNum(app.requested_amount),
+      Decision_Status__c: app.decision_status || null,
+      Approved__c: approved,
+      Approval_Date__c: approvalDate,
+      Approved_Amount__c: approved ? parseNum(app.decision_advance_amount) : null,
+      Funded__c: funded,
+      Funded_Date__c: fundedDate,
+      Funded_Amount__c: funded ? parseNum(app.decision_advance_amount) : null,
+      Lifecycle_Stage__c: lifecycle,
+      Last_Synced_At__c: new Date().toISOString(),
+    };
+    const upsert = await sfApi(
+      "PATCH",
+      `/sobjects/CLC_Attribution__c/CLC_Application_ID__c/${encodeURIComponent(String(app.id))}`,
+      payload,
+    );
+    if (!upsert.success) {
+      console.error(`[CLC Attribution] Upsert failed for ${app.id}: ${upsert.error}`);
+      return { synced: false, error: upsert.error };
+    }
+    console.log(`[CLC Attribution] Upserted ${app.id}: ${lifecycle}, ${messageType}, ${emailFormat}`);
+    return { synced: true };
+  } catch (err: any) {
+    console.error(`[CLC Attribution] Error for ${applicationId}: ${err.message}`);
+    return { synced: false, error: err.message };
+  }
+}
+
+async function syncClcAttributionForDecision(decision: Record<string, any>, oppId: string): Promise<void> {
+  const { pool } = await import("../db");
+  if (!decision?.id) return;
+  const result = await pool.query(`
+    SELECT a.id
+    FROM loan_applications a
+    JOIN business_underwriting_decisions d ON d.id = $1
+    WHERE (
+      lower(trim(coalesce(a.utm_source, ''))) IN ('email','mailgun','ghl','outlook')
+      OR lower(trim(coalesce(a.utm_medium, ''))) IN ('email','email marketing','ses')
+      OR coalesce(a.utm_source, '') ILIKE '%email%'
+      OR coalesce(a.tracking_source, '') ILIKE '%email%'
+      OR coalesce(a.source_page, '') ILIKE '%email%'
+      OR coalesce(a.referrer_url, '') ILIKE '%email%'
+    )
+    AND (
+      (a.sf_opportunity_id IS NOT NULL AND trim(a.sf_opportunity_id) <> '' AND d.sf_opportunity_id = a.sf_opportunity_id)
+      OR (a.email IS NOT NULL AND trim(a.email) <> '' AND lower(trim(a.email)) IN (
+        lower(trim(coalesce(d.business_email, ''))),
+        lower(trim(coalesce(d.merchant_email, ''))),
+        lower(trim(coalesce(d.secondary_email, '')))
+      ))
+    )
+    AND a.created_at <= greatest(
+      coalesce(d.funded_date::timestamptz, '-infinity'::timestamptz),
+      coalesce(d.approval_date::timestamptz, '-infinity'::timestamptz),
+      coalesce(d.updated_at, d.created_at)
+    )
+    ORDER BY
+      CASE WHEN d.sf_opportunity_id = a.sf_opportunity_id AND a.sf_opportunity_id IS NOT NULL THEN 0 ELSE 1 END,
+      a.created_at DESC,
+      a.id
+    LIMIT 1
+  `, [decision.id]);
+  if (result.rows[0]?.id) {
+    await syncClcAttributionToSalesforce(String(result.rows[0].id), oppId);
+  }
+}
+
 /**
  * Main sync function — call this after saving a loan_application.
  * UPDATE-ONLY: searches for existing SF Leads and Opportunities by email/phone,
@@ -798,6 +1069,9 @@ export async function syncDecisionToSalesforce(decision: Record<string, any>, ap
       // Also sync lender submissions for this decision
       await syncLenderSubmissionsToSalesforce(oppId, decision).catch(err =>
         console.error(`[SF Lender Sync] Error (non-fatal): ${err.message}`)
+      );
+      await syncClcAttributionForDecision(decision, oppId).catch(err =>
+        console.error(`[CLC Attribution] Decision sync error (non-fatal): ${err.message}`)
       );
 
       return { synced: true, action, oppId };
