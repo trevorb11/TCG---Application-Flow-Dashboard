@@ -5,5 +5,6 @@
 - [Deploy bootstrap for slow boot](deploy-slow-boot-bootstrap.md) — health checks give up ~6.5s in; prod runs `node server/prod-start.mjs` placeholder, not `npm start`. reusePort is a no-op on Node 20.
 - [Prod hangs & compression/SSE rule](prod-hang-pool-compression.md) — all DB pools need connectionTimeoutMillis or peak load hangs forever; compression() must exclude SSE routes via filter.
 - [Inertia Funding CRM sync](inertia-crm-sync.md) — external intake may identify itself by source label instead of referrer; route incomplete, complete, and statement events together.
+- [GHL owner-sync credentials](ghl-owner-sync-credentials.md) — the app's primary GHL token may be stale while the alternate private token works; standardize before relying on automatic rep sync.
 - [Stale agent email data](stale-agent-email-data.md) — agent email corrections must cover historical application records as well as the shared agent registry.
 - [Application signature PDF dates](application-signature-pdf-dates.md) — keep header dates separate; never render dates or times beneath applicant signatures.
