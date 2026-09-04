@@ -1,14 +1,14 @@
 ---
 name: Dev vs prod databases are separate
-description: executeSql tool hits Replit-managed dev DB; production app uses external Neon DB. They are not the same instance.
+description: Production data access paths differ; the NEON_DATABASE_URL connection is the dialer DB, not the primary application DB.
 ---
 
-The `executeSql` code-execution callback targets the **Replit-managed development PostgreSQL**, not the external Neon database the production app connects to.
+Use the production-aware `executeSql` read path for verification and the deployed app's authenticated admin data API for production mutations. Do not use `NEON_DATABASE_URL` for primary application records; in this project it connects to the separate dialer database.
 
-**Why:** Confirmed when debugging the LOC banner — `executeSql` found zero funded decisions for a specific merchant, but production server logs showed the PATCH succeeded and the decision clearly existed in the production Neon DB with `status=funded`.
+**Why:** A record verified through the production read path was absent when queried through `NEON_DATABASE_URL`; the deployed app's authenticated admin API found and mutated it successfully.
 
 **How to apply:**
-- Never use `executeSql` to verify production data. Use `fetch_deployment_logs` to inspect production server behavior instead.
-- Direct SQL writes via `executeSql` affect only the dev database and have no effect on production data.
-- To investigate a production data issue, look at: (1) deployment logs for the relevant API response, (2) the route/storage code path, (3) deploy a logging improvement if needed.
-- Previous memory note claiming "dev and prod share same Neon instance" was incorrect.
+- For verification, explicitly select the production environment in the production-aware SQL callback.
+- Production SQL through that callback is read-only; use the deployed app's authenticated admin mutation endpoint for narrowly scoped writes.
+- Guard every production mutation with stable identifiers and expected values, and return the affected row.
+- Treat `NEON_DATABASE_URL` as the separate dialer store unless current code proves otherwise.
