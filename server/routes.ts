@@ -19224,13 +19224,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   return httpServer;
-} // End live routes implementation.
-
-/*
- * Disabled duplicate import block. The remainder of this exact duplicate is
- * isolated below so it cannot redeclare the live routes implementation.
- */
-/*
+}
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { createServer, type Server } from "http";
 import path from "path";
@@ -19277,9 +19271,6 @@ const SF_SYNC_ENABLED = false;
 
 import { z } from "zod";
 import type { LoanApplication, MerchantBankSnapshot, RepCallStat } from "@shared/schema";
-*/
-
-namespace DuplicateRoutesCopy {
 
 // Initialize Object Storage service for persistent file storage
 const objectStorage = new ObjectStorageService();
@@ -38460,5 +38451,4 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   return httpServer;
-}
 }
