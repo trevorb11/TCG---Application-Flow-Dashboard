@@ -5317,13 +5317,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     `;
 
     const ccAddresses = ['marketing@todaycapitalgroup.com', agentEmail].filter(Boolean).join(', ');
-    await gmailService.sendEmailWithAttachments(
+    const emailSent = await gmailService.sendEmailWithAttachments(
       'underwriting@todaycapitalgroup.com',
       subject,
       html,
       attachments,
       ccAddresses || undefined,
     );
+    if (!emailSent) {
+      throw new Error(`Gmail did not confirm underwriting email delivery for ${normalizedEmail}`);
+    }
     console.log(`[SUBMIT-UW] Email sent for: ${normalizedEmail} (${attachments.length} attachments, CC: ${ccAddresses || 'none'})`);
 
     // Stamp the submission timestamp on the matching loan application
@@ -24541,13 +24544,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     `;
 
     const ccAddresses = ['marketing@todaycapitalgroup.com', agentEmail].filter(Boolean).join(', ');
-    await gmailService.sendEmailWithAttachments(
+    const emailSent = await gmailService.sendEmailWithAttachments(
       'underwriting@todaycapitalgroup.com',
       subject,
       html,
       attachments,
       ccAddresses || undefined,
     );
+    if (!emailSent) {
+      throw new Error(`Gmail did not confirm underwriting email delivery for ${normalizedEmail}`);
+    }
     console.log(`[SUBMIT-UW] Email sent for: ${normalizedEmail} (${attachments.length} attachments, CC: ${ccAddresses || 'none'})`);
 
     // Stamp the submission timestamp on the matching loan application

@@ -8,3 +8,4 @@
 - [GHL owner-sync credentials](ghl-owner-sync-credentials.md) — the app's primary GHL token may be stale while the alternate private token works; standardize before relying on automatic rep sync.
 - [Stale agent email data](stale-agent-email-data.md) — agent email corrections must cover historical application records as well as the shared agent registry.
 - [Application signature PDF dates](application-signature-pdf-dates.md) — keep header dates separate; never render dates or times beneath applicant signatures.
+- [Underwriting Gmail false success](underwriting-gmail-delivery.md) — deployment connector discovery can fail despite healthy OAuth; require Gmail confirmation before stamping submission.
