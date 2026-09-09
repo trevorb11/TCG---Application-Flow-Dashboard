@@ -1,55 +1,56 @@
 // Gmail Service for Approval Email Scanning
 // Integration: google-mail connector
 
-import { google } from 'googleapis';
+import { ReplitConnectors } from '@replit/connectors-sdk';
 
-async function getAccessToken() {
-  const hostname = process.env.REPLIT_CONNECTORS_HOSTNAME;
-  const xReplitToken = process.env.REPL_IDENTITY 
-    ? 'repl ' + process.env.REPL_IDENTITY 
-    : process.env.WEB_REPL_RENEWAL 
-    ? 'depl ' + process.env.WEB_REPL_RENEWAL 
-    : null;
+const connectors = new ReplitConnectors();
 
-  if (!xReplitToken) {
-    throw new Error('X_REPLIT_TOKEN not found for repl/depl');
-  }
-
-  const response = await fetch(
-    'https://' + hostname + '/api/v2/connection?include_secrets=true&connector_names=google-mail',
-    {
-      headers: {
-        'Accept': 'application/json',
-        'X_REPLIT_TOKEN': xReplitToken
-      }
-    }
-  );
+async function gmailRequest(path: string, options: RequestInit = {}): Promise<any> {
+  const response = await connectors.proxy('google-mail', path, options);
+  const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(`Unable to resolve Gmail connection (${response.status})`);
+    const detail = body?.error?.message || body?.message || response.statusText;
+    throw new Error(`Gmail connector request failed (${response.status}): ${detail}`);
   }
 
-  const data = await response.json();
-  const connectionSettings = data.items?.[0];
-
-  const accessToken = connectionSettings?.settings?.access_token
-    || connectionSettings?.settings?.oauth?.credentials?.access_token;
-
-  if (!connectionSettings || !accessToken) {
-    throw new Error('Gmail not connected');
-  }
-  return accessToken;
+  return body;
 }
 
+/**
+ * Compatibility facade for the small Gmail API subset this service uses.
+ * Every operation goes through the connector proxy so deployment identity,
+ * OAuth refresh, and the project's currently attached account are handled by
+ * Replit instead of exposing or caching access tokens in this process.
+ */
 async function getUncachableGmailClient() {
-  const accessToken = await getAccessToken();
-
-  const oauth2Client = new google.auth.OAuth2();
-  oauth2Client.setCredentials({
-    access_token: accessToken
-  });
-
-  return google.gmail({ version: 'v1', auth: oauth2Client });
+  return {
+    users: {
+      getProfile: async (_params: { userId: string }) => ({
+        data: await gmailRequest('/gmail/v1/users/me/profile'),
+      }),
+      messages: {
+        list: async (params: { userId: string; q?: string; maxResults?: number }) => {
+          const query = new URLSearchParams();
+          if (params.q) query.set('q', params.q);
+          if (params.maxResults) query.set('maxResults', String(params.maxResults));
+          const suffix = query.toString() ? `?${query}` : '';
+          return { data: await gmailRequest(`/gmail/v1/users/me/messages${suffix}`) };
+        },
+        get: async (params: { userId: string; id: string; format?: string }) => {
+          const query = params.format ? `?format=${encodeURIComponent(params.format)}` : '';
+          return { data: await gmailRequest(`/gmail/v1/users/me/messages/${encodeURIComponent(params.id)}${query}`) };
+        },
+        send: async (params: { userId: string; requestBody: { raw: string } }) => ({
+          data: await gmailRequest('/gmail/v1/users/me/messages/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(params.requestBody),
+          }),
+        }),
+      },
+    },
+  };
 }
 
 export interface EmailMessage {
@@ -85,7 +86,7 @@ export class GmailService {
   
   async isConfigured(): Promise<boolean> {
     try {
-      await getAccessToken();
+      await gmailRequest('/gmail/v1/users/me/profile');
       return true;
     } catch {
       return false;
