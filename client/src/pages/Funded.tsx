@@ -1242,10 +1242,30 @@ export default function Funded() {
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div>
-                      <div className="text-muted-foreground">Advance Amount</div>
+                      <div className="text-muted-foreground">Funded Amount</div>
                       <div className="font-semibold text-emerald-600 dark:text-emerald-400">
                         {formatCurrency(entry.advanceAmount)}
                       </div>
+                      {(() => {
+                        const primaryApproval = sortedApprovals.find(a => a.isPrimary);
+                        const approvedRaw = primaryApproval?.advanceAmount != null ? parseFloat(primaryApproval.advanceAmount) : null;
+                        const fundedRaw = entry.advanceAmount != null ? parseFloat(entry.advanceAmount) : null;
+                        const approvedAmt = approvedRaw != null && !Number.isNaN(approvedRaw) ? approvedRaw : null;
+                        const fundedAmt = fundedRaw != null && !Number.isNaN(fundedRaw) ? fundedRaw : null;
+                        if (approvedAmt != null && fundedAmt != null && Math.abs(approvedAmt - fundedAmt) > 0.01) {
+                          const isUnder = fundedAmt < approvedAmt;
+                          return (
+                            <div className="flex items-center gap-1 mt-1 flex-wrap" data-testid={`text-approved-vs-funded-${entry.id}`}>
+                              <span className="text-xs text-muted-foreground line-through">{formatCurrency(approvedAmt)}</span>
+                              <span className="text-xs text-muted-foreground">&rarr;</span>
+                              <span className={`text-xs font-medium ${isUnder ? 'text-amber-600 dark:text-amber-400' : 'text-sky-600 dark:text-sky-400'}`}>
+                                {isUnder ? 'under' : 'over'} by {formatCurrency(Math.abs(approvedAmt - fundedAmt))}
+                              </span>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                     <div>
                       <div className="text-muted-foreground">Term</div>
