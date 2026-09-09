@@ -1176,6 +1176,12 @@ export default function QuizIntake({ agent }: { agent?: Agent } = {}) {
     </div>
   );
 }
+
+/*
+ * Disabled duplicate import block. The remainder of this exact duplicate is
+ * isolated below so it cannot redeclare the live page component.
+ */
+/*
 import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -1185,6 +1191,9 @@ import { trackIntakeFormSubmitted, trackFormStepCompleted, trackPageView } from 
 import { initUTMTracking, getStoredUTMParams } from "@/lib/utm";
 import GigFiPartnerFlow from "./GigFiPartnerFlow";
 import type { Agent } from "@shared/agents";
+*/
+
+namespace DuplicateQuizIntakeCopy {
 
 const BUSINESS_AGE_OPTIONS = [
   "Less than 3 months",
@@ -1280,7 +1289,7 @@ function formatPhone(value: string): string {
   return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
-export default function QuizIntake({ agent }: { agent?: Agent } = {}) {
+function QuizIntakeDuplicate({ agent }: { agent?: Agent } = {}) {
   const [, navigate] = useLocation();
   const [currentQuestion, setCurrentQuestion] = useState(1);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -2353,4 +2362,5 @@ export default function QuizIntake({ agent }: { agent?: Agent } = {}) {
       `}</style>
     </div>
   );
+}
 }
