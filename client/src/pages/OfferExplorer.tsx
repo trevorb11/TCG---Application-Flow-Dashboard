@@ -535,14 +535,6 @@ export default function OfferExplorer() {
                     {fmtMoney(metrics.payment, true)}
                   </span>
                 </div>
-                <div className="offer-metric-row-sel">
-                  <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.03em", color: "rgba(255,255,255,0.65)" }}>
-                    Total Payback
-                  </span>
-                  <span style={{ fontSize: "1.125rem", fontWeight: 700, color: "#fff" }}>
-                    {fmtMoney(metrics.payback)}
-                  </span>
-                </div>
               </div>
             </div>
           );
@@ -761,7 +753,6 @@ export default function OfferExplorer() {
                 fmtMoney(payment, payment < 10000),
                 true,
               )}
-              {metric("Total Payback", fmtMoney(payback))}
               {metric("Number of Payments", String(nPayments))}
               {metric("Term", current?.term || "—")}
             </div>
