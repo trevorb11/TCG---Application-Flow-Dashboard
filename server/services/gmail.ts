@@ -6,7 +6,7 @@ import { ReplitConnectors } from '@replit/connectors-sdk';
 const connectors = new ReplitConnectors();
 
 async function gmailRequest(path: string, options: RequestInit = {}): Promise<any> {
-  const response = await connectors.proxy('google-mail', path, options);
+  const response = await connectors.proxy('google-mail', path, options as any);
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
@@ -129,7 +129,7 @@ export class GmailService {
           
           const headers = fullMessage.data.payload?.headers || [];
           const getHeader = (name: string) => 
-            headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+            headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
           
           // Extract body
           let body = '';
@@ -184,7 +184,7 @@ export class GmailService {
       
       const headers = fullMessage.data.payload?.headers || [];
       const getHeader = (name: string) => 
-        headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+        headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
       
       let body = '';
       const payload = fullMessage.data.payload;

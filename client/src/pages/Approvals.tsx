@@ -682,10 +682,10 @@ export default function Approvals() {
         earlyPayoffEnabled: editForm.earlyPayoffEnabled,
         earlyPayoffMode: editForm.earlyPayoffEnabled ? editForm.earlyPayoffMode : undefined,
         earlyPayoffAmounts: editForm.earlyPayoffEnabled && editForm.earlyPayoffMode === 'amounts' && editForm.earlyPayoffAmounts.length > 0
-          ? editForm.earlyPayoffAmounts.map(v => parseFloat(v)).filter(n => !isNaN(n) && n > 0)
+          ? editForm.earlyPayoffAmounts.filter(v => { const n = parseFloat(v); return !isNaN(n) && n > 0; })
           : undefined,
         earlyPayoffRates: editForm.earlyPayoffEnabled && editForm.earlyPayoffMode === 'rates' && editForm.earlyPayoffRates.length > 0
-          ? editForm.earlyPayoffRates.map(v => parseFloat(v)).filter(n => !isNaN(n) && n > 0)
+          ? editForm.earlyPayoffRates.filter(v => { const n = parseFloat(v); return !isNaN(n) && n > 0; })
           : undefined,
         totalPayback: editForm.totalPayback,
         netAfterFees: editForm.netAfterFees,
