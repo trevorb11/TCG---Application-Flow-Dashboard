@@ -3831,16 +3831,6 @@ export default function Dashboard() {
       });
       if (resignApplication) {
         dataToSave.signatureDate = new Date().toISOString();
-        // The live application view only renders any signature UI at all when
-        // applicantSignature is non-empty (see ApplicationView.html) - bumping
-        // just signatureDate on an application that was never actually signed
-        // (or has no image/consent value on file) does nothing visible. Only
-        // fill it in when missing so a real drawn signature already on file is
-        // never overwritten - the date-only re-stamp above is enough for that case.
-        const existingSignature = String(selectedAppDetails?.applicantSignature || "").trim();
-        if (!existingSignature) {
-          dataToSave.applicantSignature = "SIGNED_VIA_ADMIN_RESIGN";
-        }
       }
       saveApplicationMutation.mutate({
         id: selectedAppDetails.id,
@@ -5423,7 +5413,7 @@ export default function Dashboard() {
                       Re-sign Application
                     </Label>
                     <p className="text-sm text-muted-foreground">
-                      Check this box to update the e-signature date to the current date, overriding the original submission date. If the application has no signature on file yet, this also marks it as signed so it shows correctly on the live application link.
+                      Check this box to update the e-signature date to the current date, overriding the original submission date.
                       {resignApplication && (
                         <span className="block mt-1 font-medium text-foreground">
                           New signature date will be set to: {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
