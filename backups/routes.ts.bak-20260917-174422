@@ -2365,28 +2365,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (applicationData.businessName as string | undefined) || (applicationData as any).legalBusinessName,
       );
 
-      // Flag web leads: anyone who submits the intake/quiz form. Also inherit
-      // web-lead status from any prior round for the same merchant - a
-      // returning merchant who originally came in through the public intake
-      // form should keep that attribution on later funding rounds even when
-      // the new round arrives via a path that would not set it on its own
-      // (e.g. a partner-site full-application submission).
-      let isWebLead = !!applicationData.isCompleted;
-      if (!isWebLead && newMerchantId) {
-        try {
-          const priorWebLead = await db.execute(sql`
-            SELECT 1 FROM loan_applications
-            WHERE merchant_id = ${newMerchantId} AND is_web_lead = true
-            LIMIT 1
-          `);
-          if (priorWebLead.rows.length > 0) {
-            isWebLead = true;
-            console.log(`[WEB LEAD INHERIT] New round for merchant ${newMerchantId} inherits web-lead status from a prior round`);
-          }
-        } catch (webLeadCheckErr) {
-          console.warn("[WEB LEAD INHERIT] Failed to check prior web lead status (non-fatal):", webLeadCheckErr);
-        }
-      }
+      // Flag web leads: anyone who submits the intake/quiz form
+      const isWebLead = !!applicationData.isCompleted;
 
       // Update with agentViewUrl, fundingReportUrl, and merchantId
       const updatedApp = await storage.updateLoanApplication(application.id, {
