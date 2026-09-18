@@ -2365,20 +2365,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         (applicationData.businessName as string | undefined) || (applicationData as any).legalBusinessName,
       );
 
-      // Flag web leads: anyone who engages with the actual intake/quiz form
-      // at all - isPartnerSiteSubmission is true whenever sourcePage is set,
-      // which every intake quiz (the main-site /intake/quiz and every
-      // white-labeled partner sub-brand) stamps on its very first step,
-      // before completion. Deliberately NOT keyed off isCompleted alone: a
-      // full application finished through an unrelated path (an agent link,
-      // a partner's direct full-application flow) never touches the intake
-      // form and should not retroactively earn the web-lead tag just for
-      // being completed. Also inherit web-lead status from any prior round
-      // for the same merchant - a returning merchant who originally came in
-      // through the public intake form should keep that attribution on
-      // later funding rounds even when the new round arrives via a path
-      // that would not set it on its own.
-      let isWebLead = !!applicationData.isCompleted || isPartnerSiteSubmission(applicationData);
+      // Flag web leads: anyone who submits the intake/quiz form. Also inherit
+      // web-lead status from any prior round for the same merchant - a
+      // returning merchant who originally came in through the public intake
+      // form should keep that attribution on later funding rounds even when
+      // the new round arrives via a path that would not set it on its own
+      // (e.g. a partner-site full-application submission).
+      let isWebLead = !!applicationData.isCompleted;
       if (!isWebLead && newMerchantId) {
         try {
           const priorWebLead = await db.execute(sql`
