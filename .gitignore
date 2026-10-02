@@ -10,3 +10,13 @@ vite.config.ts.*
 .playwright-mcp/
 CapitalLoanConnect Database Access.txt
 *.local.md.firecrawl/
+
+# Never commit: merchant data, local backups, run logs, pasted screenshots
+backups/
+server/uploads/
+server/data/funded-deals-audit.json
+scripts/logs/
+attached_assets/*
+!attached_assets/plaid_logo_1770240188710.png
+!attached_assets/TCG_White_logo_1764664150165.png
+!attached_assets/tcg_white_logo_1774465809567.png

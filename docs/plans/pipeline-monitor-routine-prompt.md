@@ -99,7 +99,7 @@ Replace `{PHONE_LIST}` with a comma-separated list of the last 10 digits of each
 If a merchant has no phone number in the database, try looking them up in GHL:
 ```
 POST https://services.leadconnectorhq.com/contacts/search
-Authorization: Bearer pit-d6ee52d0-bb03-401a-9099-158e5b1cb561
+Authorization: Bearer <GHL_PRIVATE_TOKEN>
 Content-Type: application/json
 Version: 2021-07-28
 
